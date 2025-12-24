@@ -224,6 +224,7 @@ def main():
         if iorb and iorb.latest_value:
             fed_table.add_row("IORB", f"{iorb.latest_value:.2f}%", format_trend(iorb), "准备金利率")
         
+        
         # EFFR
         if effr and effr.latest_value:
             fed_table.add_row("EFFR", f"{effr.latest_value:.2f}%", format_trend(effr), "有效联邦基金利率")
