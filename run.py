@@ -75,40 +75,9 @@ def main():
         eval_growth = stock.fy_next_growth if stock.fy_next_growth else growth_result.value
         status = thresholds.evaluate(eval_growth, eval_garp)
         
-        # 检测低基数高增长陷阱
-        remark = ""
-        pe_ttm = stock.trailing_pe
-        fwd_pe = stock.forward_pe
-        growth = stock.fy_next_growth if stock.fy_next_growth else growth_result.value
-        
-        if growth and growth > 100:
-            remark = "⚠低基数"
-        elif pe_ttm and fwd_pe and growth:
-            if fwd_pe > pe_ttm and growth > 50:
-                remark = "⚠低基数"
-        elif not pe_ttm and growth and growth > 50:
-            remark = "⚠缺TTM"
-        
         final_garp = fy_garp if fy_garp else garp_value
         
-        # 计算股价预估范围
-        price = stock.current_price
-        # 0y 股价范围：基于当前价格和 0y EPS 分散度
-        price_0y_range = None
-        if price and stock.eps_0y_low_ratio and stock.eps_0y_high_ratio:
-            p_0y_low = price * stock.eps_0y_low_ratio
-            p_0y_high = price * stock.eps_0y_high_ratio
-            price_0y_range = f"{p_0y_low:.1f}~{p_0y_high:.1f}"
-        
-        # +1y 股价范围：基于预期增长后的价格和 +1y EPS 分散度
-        price_1y_range = None
-        if price and stock.fy_next_growth and stock.eps_1y_low_ratio and stock.eps_1y_high_ratio:
-            # 预期均价 = 当前价格 × (1 + 增速)
-            expected_price = price * (1 + stock.fy_next_growth / 100)
-            p_1y_low = expected_price * stock.eps_1y_low_ratio
-            p_1y_high = expected_price * stock.eps_1y_high_ratio
-            price_1y_range = f"{p_1y_low:.1f}~{p_1y_high:.1f}"
-        
+        pe_ttm = stock.trailing_pe
         records.append({
             "代码": stock.display_symbol,
             "名称": stock.name,
@@ -120,7 +89,6 @@ def main():
             "分析师": stock.analyst_count,
             "GARP": round(final_garp, 2) if final_garp else None,
             "评价": status,
-            "备注": remark,
             # PE SD Band
             "SD90": round(stock.pe_sd_90d, 2) if stock.pe_sd_90d is not None else None,
             "SD180": round(stock.pe_sd_180d, 2) if stock.pe_sd_180d is not None else None,
@@ -131,9 +99,16 @@ def main():
             "FY1范围": stock.fy_next_range,
             # 财年结束月份 (从范围中提取，如 "2025-01-01 ~ 2025-12-31" -> 12)
             "财年结束月": int(stock.fy_next_range.split(" ~ ")[1].split("-")[1]) if stock.fy_next_range else None,
-            # 股价预估范围
-            "0y股价": price_0y_range,
-            "+1y股价": price_1y_range,
+            # EPS 数据（使用转换后的EPS）
+            "+0y EPS": round(stock.eps_0y_converted, 2) if stock.eps_0y_converted is not None else (round(stock.eps_0y, 2) if stock.eps_0y else None),
+            "+1y EPS": round(stock.eps_1y_converted, 2) if stock.eps_1y_converted is not None else (round(stock.eps_1y, 2) if stock.eps_1y else None),
+            # EPS货币显示：转换路径 + 汇率信息
+            "EPS货币": (
+                f"{stock.eps_currency}->{stock.eps_converted_currency} (汇率:{stock.eps_exchange_rate:.4f})" 
+                if stock.eps_converted_currency and stock.eps_exchange_rate and stock.eps_currency 
+                   and stock.eps_exchange_rate != 1.0 and stock.eps_currency != stock.eps_converted_currency
+                else (stock.eps_converted_currency or stock.eps_currency or 'USD')
+            ),
         })
     
     # 排序
@@ -142,18 +117,19 @@ def main():
     # 输出表格
     console = Console()
     # 使用通用标签: 0y=当前财年, +1y=下一财年
-    table = Table(title="GARP 分析结果 (0y=当前财年, +1y=下一财年)", show_header=True)
+    current_time = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    table = Table(title=f"GARP 卖方分析结果 (0y=当前财年, +1y=下一财年) - {current_time}", show_header=True)
     
     table.add_column("代码", no_wrap=True)
     table.add_column("名称", no_wrap=True, max_width=8)
     table.add_column("FY", justify="right")
     table.add_column("现价", justify="right")
-    table.add_column("0y股价预估", justify="right")
-    table.add_column("+1y股价预估", justify="right")
     table.add_column("+1yPE", justify="right")
     table.add_column("+1y%", justify="right")
+    table.add_column("+0y EPS", justify="right")
+    table.add_column("+1y EPS", justify="right")
+    table.add_column("EPS货币", justify="right")
     table.add_column("GARP", justify="right")
-    table.add_column("备注", no_wrap=True)
     
     for r in records:
         table.add_row(
@@ -161,12 +137,12 @@ def main():
             r["名称"][:8] if r["名称"] else "-",
             f"{r['财年结束月']}月" if r["财年结束月"] else "-",
             str(r["价格"]) if r["价格"] else "-",
-            r["0y股价"] if r["0y股价"] else "-",
-            r["+1y股价"] if r["+1y股价"] else "-",
             str(r["FY_PE"]) if r["FY_PE"] else "-",
             str(r["FY1增长%"]) if r["FY1增长%"] else "-",
+            str(r["+0y EPS"]) if r["+0y EPS"] else "-",
+            str(r["+1y EPS"]) if r["+1y EPS"] else "-",
+            r["EPS货币"] if r["EPS货币"] else "-",
             str(r["GARP"]) if r["GARP"] else "-",
-            r["备注"],
         )
     
     console.print()
@@ -214,20 +190,28 @@ def main():
         # 利率范围
         if rate_upper and rate_lower and rate_upper.latest_value and rate_lower.latest_value:
             rate_range = f"{rate_lower.latest_value:.2f}% ~ {rate_upper.latest_value:.2f}%"
-            fed_table.add_row("利率目标区间", rate_range, "-", "联邦基金目标利率")
+            rate_date = rate_lower.latest_date or rate_upper.latest_date
+            rate_display = f"{rate_range}\n({rate_date})" if rate_date else rate_range
+            fed_table.add_row("利率目标区间", rate_display, "-", "联邦基金目标利率")
         
         # SOFR
         if sofr and sofr.latest_value:
-            fed_table.add_row("SOFR", f"{sofr.latest_value:.2f}%", format_trend(sofr), "担保隔夜融资利率")
+            sofr_date = sofr.latest_date or ""
+            sofr_display = f"{sofr.latest_value:.2f}%\n({sofr_date})" if sofr_date else f"{sofr.latest_value:.2f}%"
+            fed_table.add_row("SOFR", sofr_display, format_trend(sofr), "担保隔夜融资利率")
         
         # IORB
         if iorb and iorb.latest_value:
-            fed_table.add_row("IORB", f"{iorb.latest_value:.2f}%", format_trend(iorb), "准备金利率")
+            iorb_date = iorb.latest_date or ""
+            iorb_display = f"{iorb.latest_value:.2f}%\n({iorb_date})" if iorb_date else f"{iorb.latest_value:.2f}%"
+            fed_table.add_row("IORB", iorb_display, format_trend(iorb), "准备金利率")
         
         
         # EFFR
         if effr and effr.latest_value:
-            fed_table.add_row("EFFR", f"{effr.latest_value:.2f}%", format_trend(effr), "有效联邦基金利率")
+            effr_date = effr.latest_date or ""
+            effr_display = f"{effr.latest_value:.2f}%\n({effr_date})" if effr_date else f"{effr.latest_value:.2f}%"
+            fed_table.add_row("EFFR", effr_display, format_trend(effr), "有效联邦基金利率")
         
         # SOFR-IORB 差值
         if sofr and iorb and sofr.latest_value and iorb.latest_value:
@@ -242,17 +226,24 @@ def main():
                     spread_trend.append(f"{(s_val - i_val)*100:+.0f}")
             spread_trend.reverse()  # 反转为旧→新
             spread_trend_str = " → ".join(spread_trend) if spread_trend else "-"
-            fed_table.add_row("SOFR-IORB", f"{spread:+.0f}bp", spread_trend_str + "bp", spread_note)
+            # 使用SOFR或IORB的日期（优先使用SOFR）
+            spread_date = sofr.latest_date or iorb.latest_date or ""
+            spread_display = f"{spread:+.0f}bp\n({spread_date})" if spread_date else f"{spread:+.0f}bp"
+            fed_table.add_row("SOFR-IORB", spread_display, spread_trend_str + "bp", spread_note)
         
         # TGA 余额 (单位: 百万美元 -> 亿美元)
         if tga and tga.latest_value:
             tga_b = tga.latest_value / 100  # 百万 -> 亿
-            fed_table.add_row("TGA余额", f"{tga_b:.0f}亿$", format_trend(tga, "tga") + "亿", "财政部一般账户")
+            tga_date = tga.latest_date or ""
+            tga_display = f"{tga_b:.0f}亿$\n({tga_date})" if tga_date else f"{tga_b:.0f}亿$"
+            fed_table.add_row("TGA余额", tga_display, format_trend(tga, "tga") + "亿", "财政部一般账户")
         
         # 银行准备金 (单位: 百万美元 -> 万亿美元)
         if reserves and reserves.latest_value:
             reserves_t = reserves.latest_value / 1000000  # 百万 -> 万亿
-            fed_table.add_row("银行准备金", f"{reserves_t:.2f}万亿$", format_trend(reserves, "reserves") + "万亿", "充裕>2.5万亿")
+            reserves_date = reserves.latest_date or ""
+            reserves_display = f"{reserves_t:.2f}万亿$\n({reserves_date})" if reserves_date else f"{reserves_t:.2f}万亿$"
+            fed_table.add_row("银行准备金", reserves_display, format_trend(reserves, "reserves") + "万亿", "充裕>3万亿")
         
         console.print(fed_table)
         console.print()

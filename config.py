@@ -20,7 +20,7 @@ HK_TO_US_MAP: Dict[str, str] = {
 
 # 默认股票列表
 DEFAULT_TICKERS: List[str] = [
-    "BABA", "TCEHY", "3690.HK", "1810.HK", "1024.HK", "XPEV",
+    "BABA", "TCEHY", "3690.HK", "1810.HK", "3750.HK", "XPEV",
     "SE", "NVDA", "GOOGL"
 ]
 
@@ -60,4 +60,17 @@ CACHE_TTL_SECONDS: int = 300
 # 年份过滤范围（用于过滤疑似年份的数值）
 YEAR_FILTER_MIN: int = 1900
 YEAR_FILTER_MAX: int = 2100
+
+# 汇率配置
+# 人民币兑美元: 1 USD = 7 CNY (1 CNY = 1/7 USD)
+USD_CNY_RATE: float = 7.0
+CNY_USD_RATE: float = 1.0 / 7.0  # 1 CNY = 0.1429 USD
+
+# 人民币兑港币: 1 CNY = 1.11 HKD (1 HKD = 1/1.11 CNY)
+CNY_HKD_RATE: float = 1.11
+HKD_CNY_RATE: float = 1.0 / 1.11  # 1 HKD = 0.9009 CNY
+
+# 美元兑港币: 通过人民币计算 1 USD = 7 CNY = 7 * 1.11 HKD = 7.77 HKD
+USD_HKD_RATE: float = USD_CNY_RATE * CNY_HKD_RATE  # 1 USD = 7.77 HKD
+HKD_USD_RATE: float = 1.0 / USD_HKD_RATE  # 1 HKD = 0.1287 USD
 

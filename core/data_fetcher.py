@@ -10,10 +10,16 @@ import logging
 import yfinance as yf
 import pandas as pd
 
-from config import HK_TO_US_MAP
+from config import HK_TO_US_MAP, USD_CNY_RATE, CNY_USD_RATE, CNY_HKD_RATE, HKD_CNY_RATE, USD_HKD_RATE, HKD_USD_RATE
 from .parser import parse_growth_value, match_growth_row
+from .exchange_rate_fetcher import fetch_all_rates
 
 logger = logging.getLogger("GARP_Analyzer.fetcher")
+
+# 美股到港股的反向映射（仅用于需要显示港股数据的股票）
+US_TO_HK_MAP = {v: k for k, v in HK_TO_US_MAP.items()}
+# 需要显示港股数据的股票列表
+HK_DISPLAY_STOCKS = ['BABA', 'TCEHY', 'XPEV']
 
 
 @dataclass
@@ -57,6 +63,15 @@ class StockData:
     price_to_sales: Optional[float] = None     # P/S 市销率
     price_to_book: Optional[float] = None      # P/B 市净率
     ev_to_ebitda: Optional[float] = None       # EV/EBITDA
+    # EPS 数据
+    eps_0y: Optional[float] = None            # 当前财年 EPS (0y) - 原始货币
+    eps_1y: Optional[float] = None            # 下一财年 EPS (+1y) - 原始货币
+    eps_currency: Optional[str] = None       # EPS 原始货币 (财报货币)
+    # 转换后的EPS (按交易市场货币)
+    eps_0y_converted: Optional[float] = None  # 转换后的 0y EPS
+    eps_1y_converted: Optional[float] = None  # 转换后的 +1y EPS
+    eps_converted_currency: Optional[str] = None  # 转换后的货币 (交易货币)
+    eps_exchange_rate: Optional[float] = None  # 使用的汇率 (from_currency/to_currency)
     growth_estimates_raw: Any = None  # 用于调试
     error: Optional[str] = None
 
@@ -70,11 +85,92 @@ class FetchResult:
 
 
 def _get_display_symbol(ticker: str) -> str:
-    """获取显示用的股票代码"""
-    original = next((k for k, v in HK_TO_US_MAP.items() if v == ticker), ticker)
-    if original != ticker:
-        return f"{ticker} (原{original})"
+    """
+    获取显示用的股票代码
+    
+    对于有港股代码的股票（BABA、TCEHY、XPEV），直接显示港股代码
+    其他股票显示原代码
+    """
+    # 查找对应的港股代码
+    hk_code = next((k for k, v in HK_TO_US_MAP.items() if v == ticker), None)
+    
+    # 对于阿里、腾讯、小鹏，直接显示港股代码
+    if hk_code and ticker in ['BABA', 'TCEHY', 'XPEV']:
+        return hk_code
+    
+    # 其他情况保持原逻辑
+    if hk_code:
+        return f"{ticker} (原{hk_code})"
+    
     return ticker
+
+
+def _convert_currency(value: float, from_currency: str, to_currency: str, use_dynamic_rate: bool = False) -> tuple[float, Optional[float]]:
+    """
+    货币转换
+    
+    Args:
+        value: 要转换的数值
+        from_currency: 源货币 (USD, CNY, HKD)
+        to_currency: 目标货币 (USD, CNY, HKD)
+        use_dynamic_rate: 是否使用动态汇率（从Yahoo Finance获取）
+        
+    Returns:
+        (转换后的数值, 使用的汇率)
+    """
+    if from_currency == to_currency:
+        return value, None
+    
+    # 获取汇率
+    if use_dynamic_rate:
+        try:
+            rates = fetch_all_rates()
+            # 构建汇率映射
+            rate_map = {
+                ('CNY', 'USD'): rates.get('cny_usd'),
+                ('USD', 'CNY'): rates.get('usd_cny'),
+                ('CNY', 'HKD'): rates.get('cny_hkd'),
+                ('HKD', 'CNY'): rates.get('hkd_cny'),
+                ('USD', 'HKD'): rates.get('usd_hkd'),
+                ('HKD', 'USD'): rates.get('hkd_usd'),
+            }
+            exchange_rate = rate_map.get((from_currency, to_currency))
+            
+            if exchange_rate:
+                converted_value = value * exchange_rate
+                return converted_value, exchange_rate
+            else:
+                # 如果动态汇率获取失败，回退到静态汇率
+                logger.warning(f"无法获取 {from_currency}/{to_currency} 动态汇率，使用静态汇率")
+        except Exception as e:
+            logger.warning(f"获取动态汇率失败: {e}，使用静态汇率")
+    
+    # 使用静态汇率（回退方案）
+    # 先转换为 USD
+    if from_currency == "CNY":
+        value_in_usd = value * CNY_USD_RATE
+        from_to_usd_rate = CNY_USD_RATE
+    elif from_currency == "HKD":
+        value_in_usd = value * HKD_USD_RATE
+        from_to_usd_rate = HKD_USD_RATE
+    else:  # USD
+        value_in_usd = value
+        from_to_usd_rate = 1.0
+    
+    # 从 USD 转换为目标货币
+    if to_currency == "CNY":
+        converted_value = value_in_usd * USD_CNY_RATE
+        # 总汇率 = from_currency -> USD -> CNY
+        exchange_rate = from_to_usd_rate * USD_CNY_RATE
+    elif to_currency == "HKD":
+        converted_value = value_in_usd * USD_HKD_RATE
+        # 总汇率 = from_currency -> USD -> HKD
+        exchange_rate = from_to_usd_rate * USD_HKD_RATE
+    else:  # USD
+        converted_value = value_in_usd
+        exchange_rate = from_to_usd_rate
+    
+    return converted_value, exchange_rate
 
 
 def _calculate_pe_sd_band(
@@ -204,13 +300,51 @@ def fetch_single_stock(
     """
     display_symbol = _get_display_symbol(ticker)
     
+    # 对于需要显示港股数据的股票，获取港股ticker
+    use_hk_data = ticker in HK_DISPLAY_STOCKS
+    hk_ticker = US_TO_HK_MAP.get(ticker) if use_hk_data else None
+    
     try:
-        stock = yf.Ticker(ticker)
-        info = stock.info
+        # 如果使用港股数据，优先获取港股信息
+        if use_hk_data and hk_ticker:
+            try:
+                hk_stock = yf.Ticker(hk_ticker)
+                hk_info = hk_stock.info
+                # 使用港股的价格和PE数据
+                hk_price = hk_info.get('currentPrice') or hk_info.get('regularMarketPrice')
+                hk_forward_pe = hk_info.get('forwardPE')
+                hk_trailing_pe = hk_info.get('trailingPE')
+                hk_currency = hk_info.get('currency', 'HKD')
+                
+                if hk_price and (hk_forward_pe or hk_trailing_pe):
+                    logger.info(f"[{ticker}] 使用港股数据 ({hk_ticker}): 价格={hk_price:.2f} {hk_currency}, Forward PE={hk_forward_pe}, Trailing PE={hk_trailing_pe}")
+                    # 使用港股数据
+                    stock = hk_stock
+                    info = hk_info
+                    use_hk_price = True
+                else:
+                    # 港股数据不完整，回退到美股
+                    logger.warning(f"[{ticker}] 港股数据不完整，使用美股数据")
+                    stock = yf.Ticker(ticker)
+                    info = stock.info
+                    use_hk_price = False
+            except Exception as e:
+                logger.warning(f"[{ticker}] 获取港股数据失败: {e}，使用美股数据")
+                stock = yf.Ticker(ticker)
+                info = stock.info
+                use_hk_price = False
+        else:
+            stock = yf.Ticker(ticker)
+            info = stock.info
+            use_hk_price = False
         
         # 基础信息
         name = info.get('shortName', ticker)
         current_price = info.get('currentPrice') or info.get('regularMarketPrice')
+        
+        # 货币信息
+        currency = info.get('currency', 'USD')  # 交易货币
+        financial_currency = info.get('financialCurrency', 'USD')  # 财报货币
         
         # 估值数据
         forward_pe = info.get('forwardPE')
@@ -268,6 +402,9 @@ def fetch_single_stock(
         eps_0y_high_ratio = None
         eps_1y_low_ratio = None
         eps_1y_high_ratio = None
+        eps_0y_value = None
+        eps_1y_value = None
+        eps_currency_value = financial_currency  # 默认使用财报货币
         try:
             ee = stock.earnings_estimate
             if ee is not None and not ee.empty:
@@ -280,6 +417,7 @@ def fetch_single_stock(
                         analyst_count = int(ee.loc['0y', 'numberOfAnalysts'])
                     # 获取 0y EPS 范围比例
                     eps_0y_avg = ee.loc['0y', 'avg']
+                    eps_0y_value = eps_0y_avg  # 保存 0y EPS 值
                     eps_0y_low = ee.loc['0y', 'low']
                     eps_0y_high = ee.loc['0y', 'high']
                     if eps_0y_avg and eps_0y_avg > 0:
@@ -291,7 +429,9 @@ def fetch_single_stock(
                 if '+1y' in ee.index:
                     # 获取下一财年的 EPS 预测和增长率
                     eps_next = ee.loc['+1y', 'avg']
-                    eps_0y = ee.loc['0y', 'avg'] if '0y' in ee.index else None
+                    eps_1y_value = eps_next  # 保存 +1y EPS 值
+                    if eps_0y_value is None:
+                        eps_0y_value = ee.loc['0y', 'avg'] if '0y' in ee.index else None
                     growth_next = ee.loc['+1y', 'growth']
                     forward_eps_info = info.get('forwardEps')
                     
@@ -310,29 +450,41 @@ def fetch_single_stock(
                     
                     if eps_next and eps_next > 0 and current_price:
                         if forward_eps_info and forward_eps_info > 0:
-                            # 判断 Forward EPS 更接近 0y 还是 +1y
-                            # 用于决定是否需要货币换算
-                            ratio_to_0y = abs(eps_0y / forward_eps_info - 1) if eps_0y and eps_0y > 0 else float('inf')
-                            ratio_to_1y = abs(eps_next / forward_eps_info - 1)
-                            
-                            if ratio_to_1y < 0.15:
-                                # Forward EPS ≈ +1y EPS，同货币，直接用
-                                fy_next_pe = current_price / eps_next
-                                logger.debug(f"[{ticker}] Forward EPS ≈ +1y EPS, 直接计算 +1y PE = {fy_next_pe:.2f}")
-                            elif ratio_to_0y < 0.15 and eps_0y and eps_0y > 0:
-                                # Forward EPS ≈ 0y EPS，同货币，用增长率推算
-                                fy_next_pe = current_price / eps_next
-                                logger.debug(f"[{ticker}] Forward EPS ≈ 0y EPS, 直接计算 +1y PE = {fy_next_pe:.2f}")
-                            elif eps_0y and eps_0y > 0:
-                                # 货币不同（如 BABA），用比例换算
-                                currency_ratio = eps_0y / forward_eps_info
-                                eps_next_converted = eps_next / currency_ratio
-                                fy_next_pe = current_price / eps_next_converted
-                                logger.debug(f"[{ticker}] 货币换算 ratio={currency_ratio:.2f}, +1y PE = {fy_next_pe:.2f}")
+                            # 判断是否需要货币转换
+                            # Forward EPS 是交易货币 (currency)，EPS 预期是财报货币 (financial_currency)
+                            if currency == financial_currency:
+                                # 同货币，直接计算
+                                # 判断 Forward EPS 更接近 0y 还是 +1y
+                                ratio_to_0y = abs(eps_0y_value / forward_eps_info - 1) if eps_0y_value and eps_0y_value > 0 else float('inf')
+                                ratio_to_1y = abs(eps_next / forward_eps_info - 1)
+                                
+                                if ratio_to_1y < 0.15:
+                                    # Forward EPS ≈ +1y EPS，直接用
+                                    fy_next_pe = current_price / eps_next
+                                    logger.debug(f"[{ticker}] Forward EPS ≈ +1y EPS, 直接计算 +1y PE = {fy_next_pe:.2f}")
+                                elif ratio_to_0y < 0.15 and eps_0y_value and eps_0y_value > 0:
+                                    # Forward EPS ≈ 0y EPS，用增长率推算
+                                    fy_next_pe = current_price / eps_next
+                                    logger.debug(f"[{ticker}] Forward EPS ≈ 0y EPS, 直接计算 +1y PE = {fy_next_pe:.2f}")
+                                else:
+                                    # 用增长率反推
+                                    if forward_pe and growth_next and growth_next > 0:
+                                        fy_next_pe = forward_pe / (1 + growth_next)
                             else:
-                                # 0y EPS 不可用，用增长率反推
-                                if forward_pe and growth_next and growth_next > 0:
-                                    fy_next_pe = forward_pe / (1 + growth_next)
+                                # 货币不同（如 BABA: USD vs CNY），需要转换
+                                # 将 +1y EPS (财报货币) 转换为交易货币
+                                eps_next_in_trading_currency, _ = _convert_currency(
+                                    eps_next, 
+                                    financial_currency, 
+                                    currency,
+                                    use_dynamic_rate=True
+                                )
+                                fy_next_pe = current_price / eps_next_in_trading_currency
+                                logger.debug(
+                                    f"[{ticker}] 货币转换: +1y EPS {eps_next:.2f} {financial_currency} "
+                                    f"→ {eps_next_in_trading_currency:.2f} {currency}, "
+                                    f"+1y PE = {fy_next_pe:.2f}"
+                                )
                         elif forward_pe and growth_next and growth_next > 0:
                             # Forward EPS 不可用，用增长率反推
                             fy_next_pe = forward_pe / (1 + growth_next)
@@ -341,6 +493,46 @@ def fetch_single_stock(
                         fy_next_growth = growth_next * 100  # 转为百分比
         except Exception as e:
             logger.warning(f"[{ticker}] 获取 earnings_estimate 失败: {e}")
+        
+        # 转换EPS到交易市场货币
+        eps_0y_converted = None
+        eps_1y_converted = None
+        eps_converted_currency = currency  # 转换后的货币是交易货币
+        eps_exchange_rate = None
+        
+        if eps_0y_value is not None or eps_1y_value is not None:
+            if financial_currency != currency:
+                # 需要转换
+                if eps_0y_value is not None:
+                    eps_0y_converted, rate_0y = _convert_currency(
+                        eps_0y_value, financial_currency, currency, use_dynamic_rate=True
+                    )
+                    if rate_0y:
+                        eps_exchange_rate = rate_0y
+                
+                if eps_1y_value is not None:
+                    eps_1y_converted, rate_1y = _convert_currency(
+                        eps_1y_value, financial_currency, currency, use_dynamic_rate=True
+                    )
+                    if rate_1y and eps_exchange_rate is None:
+                        eps_exchange_rate = rate_1y
+                
+                rate_str = f"{eps_exchange_rate:.6f}" if eps_exchange_rate else "N/A"
+                eps_0y_conv_str = f"{eps_0y_converted:.2f}" if eps_0y_converted is not None else "N/A"
+                eps_1y_conv_str = f"{eps_1y_converted:.2f}" if eps_1y_converted is not None else "N/A"
+                eps_0y_val_str = f"{eps_0y_value:.2f}" if eps_0y_value is not None else "N/A"
+                eps_1y_val_str = f"{eps_1y_value:.2f}" if eps_1y_value is not None else "N/A"
+                logger.debug(
+                    f"[{ticker}] EPS转换: {financial_currency} → {currency}, "
+                    f"汇率={rate_str}, "
+                    f"0y: {eps_0y_val_str} → {eps_0y_conv_str}, "
+                    f"+1y: {eps_1y_val_str} → {eps_1y_conv_str}"
+                )
+            else:
+                # 货币相同，无需转换
+                eps_0y_converted = eps_0y_value
+                eps_1y_converted = eps_1y_value
+                eps_exchange_rate = 1.0
         
         # 计算 PE SD Band
         trailing_eps = info.get('trailingEps')
@@ -395,6 +587,13 @@ def fetch_single_stock(
             price_to_sales=price_to_sales,
             price_to_book=price_to_book,
             ev_to_ebitda=ev_to_ebitda,
+            eps_0y=eps_0y_value,
+            eps_1y=eps_1y_value,
+            eps_currency=eps_currency_value,
+            eps_0y_converted=eps_0y_converted,
+            eps_1y_converted=eps_1y_converted,
+            eps_converted_currency=eps_converted_currency,
+            eps_exchange_rate=eps_exchange_rate,
             growth_estimates_raw=growth_est_raw,
         )
         
