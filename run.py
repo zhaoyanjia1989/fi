@@ -122,7 +122,7 @@ def main():
     
     table.add_column("代码", no_wrap=True)
     table.add_column("名称", no_wrap=True, max_width=8)
-    table.add_column("FY", justify="right")
+    table.add_column("财年结束月", justify="right")
     table.add_column("现价", justify="right")
     table.add_column("+1yPE", justify="right")
     table.add_column("+1y%", justify="right")
