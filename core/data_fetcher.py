@@ -66,10 +66,16 @@ class StockData:
     # EPS 数据
     eps_0y: Optional[float] = None            # 当前财年 EPS (0y) - 原始货币
     eps_1y: Optional[float] = None            # 下一财年 EPS (+1y) - 原始货币
+    eps_neg1q: Optional[float] = None        # 上一季度 EPS (-1q) - 原始货币
+    eps_0q: Optional[float] = None            # 当前季度 EPS (0q) - 原始货币
+    eps_1q: Optional[float] = None            # 下一季度 EPS (+1q) - 原始货币
     eps_currency: Optional[str] = None       # EPS 原始货币 (财报货币)
     # 转换后的EPS (按交易市场货币)
     eps_0y_converted: Optional[float] = None  # 转换后的 0y EPS
     eps_1y_converted: Optional[float] = None  # 转换后的 +1y EPS
+    eps_neg1q_converted: Optional[float] = None  # 转换后的 -1q EPS
+    eps_0q_converted: Optional[float] = None  # 转换后的 0q EPS
+    eps_1q_converted: Optional[float] = None  # 转换后的 +1q EPS
     eps_converted_currency: Optional[str] = None  # 转换后的货币 (交易货币)
     eps_exchange_rate: Optional[float] = None  # 使用的汇率 (from_currency/to_currency)
     growth_estimates_raw: Any = None  # 用于调试
@@ -405,9 +411,47 @@ def fetch_single_stock(
         eps_0y_value = None
         eps_1y_value = None
         eps_currency_value = financial_currency  # 默认使用财报货币
+        eps_neg1q_value = None
+        eps_0q_value = None
+        eps_1q_value = None
         try:
             ee = stock.earnings_estimate
             if ee is not None and not ee.empty:
+                # 获取季度EPS数据
+                if '0q' in ee.index:
+                    eps_0q_avg = ee.loc['0q', 'avg']
+                    if eps_0q_avg is not None and pd.notna(eps_0q_avg):
+                        eps_0q_value = float(eps_0q_avg)
+                        logger.debug(f"[{ticker}] 获取 0q EPS: {eps_0q_value:.2f}")
+                
+                if '+1q' in ee.index:
+                    eps_1q_avg = ee.loc['+1q', 'avg']
+                    if eps_1q_avg is not None and pd.notna(eps_1q_avg):
+                        eps_1q_value = float(eps_1q_avg)
+                        logger.debug(f"[{ticker}] 获取 +1q EPS: {eps_1q_value:.2f}")
+            
+            # 尝试从季度财报数据获取上一季度EPS（-1Q）
+            try:
+                quarterly_financials = stock.quarterly_financials
+                if quarterly_financials is not None and not quarterly_financials.empty:
+                    # 获取最近两个季度的数据
+                    # quarterly_financials的列是按时间倒序排列的（最新的在前）
+                    if len(quarterly_financials.columns) >= 2:
+                        # 第二列是上一季度
+                        # 查找Diluted EPS或Basic EPS
+                        if 'Diluted EPS' in quarterly_financials.index:
+                            prev_q_eps = quarterly_financials.loc['Diluted EPS', quarterly_financials.columns[1]]
+                            if prev_q_eps is not None and pd.notna(prev_q_eps):
+                                eps_neg1q_value = float(prev_q_eps)
+                                logger.debug(f"[{ticker}] 从季度财报获取 -1q EPS: {eps_neg1q_value:.2f}")
+                        elif 'Basic EPS' in quarterly_financials.index:
+                            prev_q_eps = quarterly_financials.loc['Basic EPS', quarterly_financials.columns[1]]
+                            if prev_q_eps is not None and pd.notna(prev_q_eps):
+                                eps_neg1q_value = float(prev_q_eps)
+                                logger.debug(f"[{ticker}] 从季度财报获取 -1q EPS: {eps_neg1q_value:.2f}")
+            except Exception as e:
+                logger.debug(f"[{ticker}] 无法获取季度财报数据: {e}")
+                
                 # 获取当前财年增长率和分析师数量
                 if '0y' in ee.index:
                     growth_0y = ee.loc['0y', 'growth']
@@ -497,10 +541,13 @@ def fetch_single_stock(
         # 转换EPS到交易市场货币
         eps_0y_converted = None
         eps_1y_converted = None
+        eps_neg1q_converted = None
+        eps_0q_converted = None
+        eps_1q_converted = None
         eps_converted_currency = currency  # 转换后的货币是交易货币
         eps_exchange_rate = None
         
-        if eps_0y_value is not None or eps_1y_value is not None:
+        if eps_0y_value is not None or eps_1y_value is not None or eps_neg1q_value is not None or eps_0q_value is not None or eps_1q_value is not None:
             if financial_currency != currency:
                 # 需要转换
                 if eps_0y_value is not None:
@@ -517,21 +564,54 @@ def fetch_single_stock(
                     if rate_1y and eps_exchange_rate is None:
                         eps_exchange_rate = rate_1y
                 
+                if eps_neg1q_value is not None:
+                    eps_neg1q_converted, rate_neg1q = _convert_currency(
+                        eps_neg1q_value, financial_currency, currency, use_dynamic_rate=True
+                    )
+                    if rate_neg1q and eps_exchange_rate is None:
+                        eps_exchange_rate = rate_neg1q
+                
+                if eps_0q_value is not None:
+                    eps_0q_converted, rate_0q = _convert_currency(
+                        eps_0q_value, financial_currency, currency, use_dynamic_rate=True
+                    )
+                    if rate_0q and eps_exchange_rate is None:
+                        eps_exchange_rate = rate_0q
+                
+                if eps_1q_value is not None:
+                    eps_1q_converted, rate_1q = _convert_currency(
+                        eps_1q_value, financial_currency, currency, use_dynamic_rate=True
+                    )
+                    if rate_1q and eps_exchange_rate is None:
+                        eps_exchange_rate = rate_1q
+                
                 rate_str = f"{eps_exchange_rate:.6f}" if eps_exchange_rate else "N/A"
                 eps_0y_conv_str = f"{eps_0y_converted:.2f}" if eps_0y_converted is not None else "N/A"
                 eps_1y_conv_str = f"{eps_1y_converted:.2f}" if eps_1y_converted is not None else "N/A"
+                eps_neg1q_conv_str = f"{eps_neg1q_converted:.2f}" if eps_neg1q_converted is not None else "N/A"
+                eps_0q_conv_str = f"{eps_0q_converted:.2f}" if eps_0q_converted is not None else "N/A"
+                eps_1q_conv_str = f"{eps_1q_converted:.2f}" if eps_1q_converted is not None else "N/A"
                 eps_0y_val_str = f"{eps_0y_value:.2f}" if eps_0y_value is not None else "N/A"
                 eps_1y_val_str = f"{eps_1y_value:.2f}" if eps_1y_value is not None else "N/A"
+                eps_neg1q_val_str = f"{eps_neg1q_value:.2f}" if eps_neg1q_value is not None else "N/A"
+                eps_0q_val_str = f"{eps_0q_value:.2f}" if eps_0q_value is not None else "N/A"
+                eps_1q_val_str = f"{eps_1q_value:.2f}" if eps_1q_value is not None else "N/A"
                 logger.debug(
                     f"[{ticker}] EPS转换: {financial_currency} → {currency}, "
                     f"汇率={rate_str}, "
                     f"0y: {eps_0y_val_str} → {eps_0y_conv_str}, "
-                    f"+1y: {eps_1y_val_str} → {eps_1y_conv_str}"
+                    f"+1y: {eps_1y_val_str} → {eps_1y_conv_str}, "
+                    f"-1q: {eps_neg1q_val_str} → {eps_neg1q_conv_str}, "
+                    f"0q: {eps_0q_val_str} → {eps_0q_conv_str}, "
+                    f"+1q: {eps_1q_val_str} → {eps_1q_conv_str}"
                 )
             else:
                 # 货币相同，无需转换
                 eps_0y_converted = eps_0y_value
                 eps_1y_converted = eps_1y_value
+                eps_neg1q_converted = eps_neg1q_value
+                eps_0q_converted = eps_0q_value
+                eps_1q_converted = eps_1q_value
                 eps_exchange_rate = 1.0
         
         # 计算 PE SD Band
@@ -589,9 +669,15 @@ def fetch_single_stock(
             ev_to_ebitda=ev_to_ebitda,
             eps_0y=eps_0y_value,
             eps_1y=eps_1y_value,
+            eps_neg1q=eps_neg1q_value,
+            eps_0q=eps_0q_value,
+            eps_1q=eps_1q_value,
             eps_currency=eps_currency_value,
             eps_0y_converted=eps_0y_converted,
             eps_1y_converted=eps_1y_converted,
+            eps_neg1q_converted=eps_neg1q_converted,
+            eps_0q_converted=eps_0q_converted,
+            eps_1q_converted=eps_1q_converted,
             eps_converted_currency=eps_converted_currency,
             eps_exchange_rate=eps_exchange_rate,
             growth_estimates_raw=growth_est_raw,

@@ -25,6 +25,61 @@ from rich.console import Console
 from rich.table import Table
 
 
+def _format_quarterly_eps_change(stock) -> str:
+    """
+    格式化季度EPS变化：显示从-1Q到+0Q到+1Q的变化和比例
+    
+    Args:
+        stock: StockData对象
+        
+    Returns:
+        格式化后的字符串，如 "-1Q:1.50→+0Q:1.73(+15.3%)→+1Q:1.43(-17.3%)"
+    """
+    # 获取转换后的季度EPS（优先使用转换后的值）
+    eps_neg1q = stock.eps_neg1q_converted if stock.eps_neg1q_converted is not None else stock.eps_neg1q
+    eps_0q = stock.eps_0q_converted if stock.eps_0q_converted is not None else stock.eps_0q
+    eps_1q = stock.eps_1q_converted if stock.eps_1q_converted is not None else stock.eps_1q
+    
+    if eps_neg1q is None and eps_0q is None and eps_1q is None:
+        return "-"
+    
+    parts = []
+    
+    # -1Q EPS
+    if eps_neg1q is not None:
+        parts.append(f"-1Q:{eps_neg1q:.2f}")
+    else:
+        parts.append("-1Q:N/A")
+    
+    # +0Q EPS 和 -1Q→+0Q 的变化
+    if eps_0q is not None:
+        parts.append(f"→+0Q:{eps_0q:.2f}")
+        # 计算-1Q到+0Q的变化比例
+        if eps_neg1q is not None and eps_neg1q > 0:
+            change_neg1_to_0 = ((eps_0q - eps_neg1q) / eps_neg1q) * 100
+            parts.append(f"({change_neg1_to_0:+.1f}%)")
+        elif eps_neg1q is not None:
+            change_abs = eps_0q - eps_neg1q
+            parts.append(f"({change_abs:+.2f})")
+    else:
+        parts.append("→+0Q:N/A")
+    
+    # +1Q EPS 和 +0Q→+1Q 的变化
+    if eps_1q is not None:
+        parts.append(f"→+1Q:{eps_1q:.2f}")
+        # 计算+0Q到+1Q的变化比例
+        if eps_0q is not None and eps_0q > 0:
+            change_0_to_1 = ((eps_1q - eps_0q) / eps_0q) * 100
+            parts.append(f"({change_0_to_1:+.1f}%)")
+        elif eps_0q is not None:
+            change_abs = eps_1q - eps_0q
+            parts.append(f"({change_abs:+.2f})")
+    else:
+        parts.append("→+1Q:N/A")
+    
+    return "".join(parts)
+
+
 
 def main():
     # 处理股票代码
@@ -102,6 +157,8 @@ def main():
             # EPS 数据（使用转换后的EPS）
             "+0y EPS": round(stock.eps_0y_converted, 2) if stock.eps_0y_converted is not None else (round(stock.eps_0y, 2) if stock.eps_0y else None),
             "+1y EPS": round(stock.eps_1y_converted, 2) if stock.eps_1y_converted is not None else (round(stock.eps_1y, 2) if stock.eps_1y else None),
+            # 季度EPS变化：计算从-1Q到+0Q到+1Q的变化和比例
+            "季度EPS变化": _format_quarterly_eps_change(stock),
             # EPS货币显示：转换路径 + 汇率信息
             "EPS货币": (
                 f"{stock.eps_currency}->{stock.eps_converted_currency} (汇率:{stock.eps_exchange_rate:.4f})" 
@@ -128,6 +185,7 @@ def main():
     table.add_column("+1y%", justify="right")
     table.add_column("+0y EPS", justify="right")
     table.add_column("+1y EPS", justify="right")
+    table.add_column("季度EPS变化", justify="left")
     table.add_column("EPS货币", justify="right")
     table.add_column("GARP", justify="right")
     
@@ -141,6 +199,7 @@ def main():
             str(r["FY1增长%"]) if r["FY1增长%"] else "-",
             str(r["+0y EPS"]) if r["+0y EPS"] else "-",
             str(r["+1y EPS"]) if r["+1y EPS"] else "-",
+            r["季度EPS变化"] if r["季度EPS变化"] else "-",
             r["EPS货币"] if r["EPS货币"] else "-",
             str(r["GARP"]) if r["GARP"] else "-",
         )
