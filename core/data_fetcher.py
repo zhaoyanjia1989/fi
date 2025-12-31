@@ -429,28 +429,6 @@ def fetch_single_stock(
                     if eps_1q_avg is not None and pd.notna(eps_1q_avg):
                         eps_1q_value = float(eps_1q_avg)
                         logger.debug(f"[{ticker}] 获取 +1q EPS: {eps_1q_value:.2f}")
-            
-            # 尝试从季度财报数据获取上一季度EPS（-1Q）
-            try:
-                quarterly_financials = stock.quarterly_financials
-                if quarterly_financials is not None and not quarterly_financials.empty:
-                    # 获取最近两个季度的数据
-                    # quarterly_financials的列是按时间倒序排列的（最新的在前）
-                    if len(quarterly_financials.columns) >= 2:
-                        # 第二列是上一季度
-                        # 查找Diluted EPS或Basic EPS
-                        if 'Diluted EPS' in quarterly_financials.index:
-                            prev_q_eps = quarterly_financials.loc['Diluted EPS', quarterly_financials.columns[1]]
-                            if prev_q_eps is not None and pd.notna(prev_q_eps):
-                                eps_neg1q_value = float(prev_q_eps)
-                                logger.debug(f"[{ticker}] 从季度财报获取 -1q EPS: {eps_neg1q_value:.2f}")
-                        elif 'Basic EPS' in quarterly_financials.index:
-                            prev_q_eps = quarterly_financials.loc['Basic EPS', quarterly_financials.columns[1]]
-                            if prev_q_eps is not None and pd.notna(prev_q_eps):
-                                eps_neg1q_value = float(prev_q_eps)
-                                logger.debug(f"[{ticker}] 从季度财报获取 -1q EPS: {eps_neg1q_value:.2f}")
-            except Exception as e:
-                logger.debug(f"[{ticker}] 无法获取季度财报数据: {e}")
                 
                 # 获取当前财年增长率和分析师数量
                 if '0y' in ee.index:
@@ -535,6 +513,28 @@ def fetch_single_stock(
                         
                     if growth_next is not None:
                         fy_next_growth = growth_next * 100  # 转为百分比
+            
+            # 尝试从季度财报数据获取上一季度EPS（-1Q）
+            try:
+                quarterly_financials = stock.quarterly_financials
+                if quarterly_financials is not None and not quarterly_financials.empty:
+                    # 获取最近两个季度的数据
+                    # quarterly_financials的列是按时间倒序排列的（最新的在前）
+                    if len(quarterly_financials.columns) >= 2:
+                        # 第二列是上一季度
+                        # 查找Diluted EPS或Basic EPS
+                        if 'Diluted EPS' in quarterly_financials.index:
+                            prev_q_eps = quarterly_financials.loc['Diluted EPS', quarterly_financials.columns[1]]
+                            if prev_q_eps is not None and pd.notna(prev_q_eps):
+                                eps_neg1q_value = float(prev_q_eps)
+                                logger.debug(f"[{ticker}] 从季度财报获取 -1q EPS: {eps_neg1q_value:.2f}")
+                        elif 'Basic EPS' in quarterly_financials.index:
+                            prev_q_eps = quarterly_financials.loc['Basic EPS', quarterly_financials.columns[1]]
+                            if prev_q_eps is not None and pd.notna(prev_q_eps):
+                                eps_neg1q_value = float(prev_q_eps)
+                                logger.debug(f"[{ticker}] 从季度财报获取 -1q EPS: {eps_neg1q_value:.2f}")
+            except Exception as e:
+                logger.debug(f"[{ticker}] 无法获取季度财报数据: {e}")
         except Exception as e:
             logger.warning(f"[{ticker}] 获取 earnings_estimate 失败: {e}")
         
