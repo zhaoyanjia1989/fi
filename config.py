@@ -21,7 +21,7 @@ HK_TO_US_MAP: Dict[str, str] = {
 # 默认股票列表
 DEFAULT_TICKERS: List[str] = [
     "BABA", "TCEHY", "3690.HK", "1810.HK", "3750.HK", "XPEV",
-    "SE", "NVDA", "GOOGL"
+    "SE", "NVDA", "GOOGL", "NFLX"
 ]
 
 
